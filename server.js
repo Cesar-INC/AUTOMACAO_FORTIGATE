@@ -15,21 +15,18 @@ async function lerArquivoMACs() {
         input: fileStream,
         crlfDelay: Infinity
     });
-
-    const listaNomesMAC = [];
-
+    const arrayMACs = [];
     for await (const linha of rl) {
         if (!linha.trim()) continue;
         const macFormatado = linha.replace(/-/g, ':').toUpperCase();
         const objetoCriado = await adicionarMACAddress(macFormatado);        
-        if (objetoCriado) {
-            listaNomesMAC.push({ name: objetoCriado.nomeMAC });
-        }
+        arrayMACs.push(objetoCriado);
     }
-
-    if (listaNomesMAC.length > 0) {
-        await atualizarOuCriarGrupo(listaNomesMAC);
-    } else {
+    await criarGrupo();
+    if(arrayMACs.length > 0){
+        alterarGrupo(arrayMACs)
+    }
+    else{
         console.log("Nenhum MAC válido para processar.");
     }
 }
@@ -37,7 +34,6 @@ async function lerArquivoMACs() {
 async function adicionarMACAddress(mac) {
     const url = `${urlBase}/api/v2/cmdb/firewall/address?vdom=${vdom}`;
     const nomeMAC = `MAC_ADDRESS_${mac}`;
-    
     const resposta = await fetch(url, {
         method: 'POST',
         headers: {
@@ -55,7 +51,7 @@ async function adicionarMACAddress(mac) {
     if (resposta.ok) {
         console.log(`Sucesso: ${nomeMAC} criado.`);
         return { nomeMAC: nomeMAC };
-    } else if (dados.cli_error_code === -5) {
+    } else if (dados.error === -5) {
         console.log(`Aviso: ${nomeMAC} já existe no Fortigate.`);
         return { nomeMAC: nomeMAC };
     } else {
@@ -64,10 +60,9 @@ async function adicionarMACAddress(mac) {
     }
 }
 
-async function atualizarOuCriarGrupo(membros) {
+async function criarGrupo() {
     const nomeGrupo = process.env.NOME_GRUPO;
-    const urlBaseGrupo = `${urlBase}/api/v2/cmdb/firewall/addrgrp?vdom=${vdom}`;
-    const respostaPost = await fetch(urlBaseGrupo, {
+    const respostaPost = await fetch(`${urlBase}/api/v2/cmdb/firewall/addrgrp?vdom=${vdom}`, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${chave}`,
@@ -75,33 +70,61 @@ async function atualizarOuCriarGrupo(membros) {
         },
         body: JSON.stringify({
             name: nomeGrupo,
-            member: membros
+            member: []
         })
     });
-
-    const dadosPost = await respostaPost.json();
-    if (respostaPost.status === 500 && dadosPost.cli_error_code === -5) {
-        const respostaPut = await fetch(`${urlBaseGrupo}/${nomeGrupo}?vdom=${vdom}`, {
+    if (respostaPost.ok) {
+        console.log(`Grupo "${nomeGrupo}" criado com sucesso.`);
+    } 
+}
+async function alterarGrupo(membros) {
+    const nomeGrupo = process.env.NOME_GRUPO;
+    const membrosDoGrupo = await listarMembrosDoGrupo();
+    const nomesMembroGrupo = membrosDoGrupo.map((membro) => {
+        return membro.name
+    })
+    const novosMembrosGrupo = membros.filter((membro) => !nomesMembroGrupo.includes(membro.nomeMAC)).map((membro) => {
+        return {name: membro.nomeMAC}
+    })
+    const respostaPut = await fetch(`${urlBase}/api/v2/cmdb/firewall/addrgrp/${nomeGrupo}?vdom=${vdom}`, {
             method: 'PUT',
             headers: {
                 'Authorization': `Bearer ${chave}`,
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                member: membros
+                member: novosMembrosGrupo
             })
         });
 
         if (respostaPut.ok) {
             console.log(`Grupo "${nomeGrupo}" atualizado com todos os membros.`);
         } else {
-            console.error(`Erro ao atualizar membros do grupo.`);
+            console.error(await respostaPut.json());
         }
-    } else if (respostaPost.ok) {
-        console.log(`Grupo "${nomeGrupo}" criado com sucesso.`);
-    } else {
-        console.error("Erro inesperado no grupo:", dadosPost);
+}
+async function listarMembrosDoGrupo() {
+    const nomeGrupo = process.env.NOME_GRUPO;
+    const url = `${urlBase}/api/v2/cmdb/firewall/addrgrp/${nomeGrupo}?vdom=${vdom}`;
+    try {
+        const resposta = await fetch(url, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${chave}`,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        const dados = await resposta.json();
+
+        if (resposta.ok) {
+            const membros = dados.results[0].member;
+            return membros;
+        } else {
+            console.error(`Erro ao buscar grupo: ${dados.status} - ${dados.message || ''}`);
+        }
+    } catch (erro) {
+        console.error("Erro na requisição GET:", erro);
     }
 }
-
 lerArquivoMACs();
